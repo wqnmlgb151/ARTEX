@@ -189,30 +189,6 @@ ORDER BY n.id`, lastID)
 	return out, rows.Err()
 }
 
-// TimedOutTasksSince returns tasks that reached status='timeout' with id > lastID,
-// ordered by id (monotonic watermark → no double-fire across restarts).
-func (d *DB) TimedOutTasksSince(lastID int64) ([]TaskEvent, error) {
-	rows, err := d.Query(`
-SELECT id, description, goal FROM tasks
-WHERE status='timeout' AND deleted_at IS NULL AND id > $1
-ORDER BY id`, lastID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []TaskEvent{}
-	for rows.Next() {
-		var e TaskEvent
-		if err := rows.Scan(&e.NodeID, &e.TaskDesc, &e.TaskGoal); err != nil {
-			return nil, err
-		}
-		e.TaskID = e.NodeID // task id doubles as NodeID for the watermark
-		e.Summary = e.TaskGoal
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
 // NewTasksSince returns tasks created with id > lastID (excluding deleted),
 // ordered by id (monotonic watermark → no double-fire across restarts). Triggered
 // agent runs are conversations, not tasks, so this never fires on its own output.

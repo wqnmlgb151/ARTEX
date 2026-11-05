@@ -86,6 +86,7 @@ type Server struct {
 	triggerQ      map[string][]triggeredRun
 	triggerActive map[string]int
 	triggerCfg    map[string]triggerBehavior
+	timeoutQueued map[string]bool
 
 	// profChatAgents caches a per-profile ChatAgent (chat page), keyed by profile id.
 	// Built lazily on first use; invalidated when any profile is saved/activated/deleted
@@ -131,13 +132,16 @@ type provEntry struct {
 // taskID + mergeable let the drainer coalesce several event triggers (finding/goal)
 // from the SAME task into one conversation before it starts (interval fires don't merge).
 type triggeredRun struct {
-	agentKey  string
-	title     string
-	message   string // 事件正文(触发语 + 工具/入参/返回等);不含任务描述/目标头
-	taskID    int64  // source task for finding/goal triggers; 0 for interval/none
-	taskDesc  string // 任务描述(任务级,同任务相同);合并时只渲染一次
-	taskGoal  string // 任务目标(任务级,同任务相同);合并时只渲染一次
-	mergeable bool   // true for finding/goal event triggers (merge by taskID)
+	timeoutDeliveryIDs []int64
+	timeoutRunID       int64
+	timeoutQueueKeys   []string
+	agentKey           string
+	title              string
+	message            string // 事件正文(触发语 + 工具/入参/返回等);不含任务描述/目标头
+	taskID             int64  // source task for finding/goal triggers; 0 for interval/none
+	taskDesc           string // 任务描述(任务级,同任务相同);合并时只渲染一次
+	taskGoal           string // 任务目标(任务级,同任务相同);合并时只渲染一次
+	mergeable          bool   // true for finding/goal event triggers (merge by taskID)
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {

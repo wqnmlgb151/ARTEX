@@ -28,7 +28,6 @@ type Scheduler struct {
 const (
 	schedKeyLastFinding    = "last_finding_id"    // watermark: max finding node id fired for
 	schedKeyFiredGoals     = "fired_goals"        // JSON array of goal node ids already fired
-	schedKeyLastTimeout    = "last_timeout_id"    // watermark: max task id fired for task timeout
 	schedKeyLastToolCall   = "last_toolcall_id"   // watermark: max activity id fired for tool call
 	schedKeyLastTaskCreate = "last_taskcreate_id" // watermark: max task id fired for task create
 )
@@ -79,17 +78,6 @@ func (sc *Scheduler) init() {
 		}
 		sc.saveFiredGoalSet(set)
 	}
-	if sc.mustState(schedKeyLastTimeout) == "" {
-		var maxID int64
-		if evs, err := sc.pg.TimedOutTasksSince(0); err == nil {
-			for _, e := range evs {
-				if e.NodeID > maxID {
-					maxID = e.NodeID
-				}
-			}
-		}
-		_ = sc.pg.SetSchedState(schedKeyLastTimeout, strconv.FormatInt(maxID, 10))
-	}
 	if sc.mustState(schedKeyLastToolCall) == "" {
 		var maxID int64
 		if evs, err := sc.pg.NewToolCallsSince(0); err == nil {
@@ -117,9 +105,6 @@ func (sc *Scheduler) init() {
 func (sc *Scheduler) step() {
 	triggers, err := sc.pg.ListEnabledTriggers()
 	if err != nil {
-		return
-	}
-	if len(triggers) == 0 {
 		return
 	}
 	sc.fireIntervals(triggers)
@@ -216,35 +201,28 @@ func (sc *Scheduler) fireGoals(triggers []*db.AgentTrigger) {
 	}
 }
 
-// fireTaskTimeouts fires on_task_timeout triggers for tasks that newly reached
-// status='timeout' above the persisted watermark (task id → no double-fire).
-func (sc *Scheduler) fireTaskTimeouts(triggers []*db.AgentTrigger) {
-	var want []*db.AgentTrigger
-	for _, tr := range triggers {
-		if tr.OnTaskTimeout {
-			want = append(want, tr)
-		}
-	}
-	last, _ := strconv.ParseInt(sc.mustState(schedKeyLastTimeout), 10, 64)
-	events, err := sc.pg.TimedOutTasksSince(last)
-	if err != nil || len(events) == 0 {
+// fireTaskTimeouts acknowledges fanout only after deliveries are durable.
+func (sc *Scheduler) fireTaskTimeouts(_ []*db.AgentTrigger) {
+	if err := sc.pg.MaterializeTimeoutEvents(); err != nil {
+		log.Printf("[scheduler] timeout fanout: %v", err)
 		return
 	}
-	// Advance the watermark even with no active trigger — see fireFindings.
-	maxID := last
-	for _, e := range events {
-		if e.NodeID > maxID {
-			maxID = e.NodeID
-		}
-		if len(want) == 0 {
-			continue
-		}
-		msgCtx := "\n\n【本次由任务超时触发】"
-		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("超时触发 · task#%d", e.TaskID), tr.TaskTimeoutMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
-		}
+	runs, err := sc.pg.RecoverableTimeoutRuns()
+	if err != nil {
+		log.Printf("[scheduler] timeout recovery: %v", err)
+		return
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastTimeout, strconv.FormatInt(maxID, 10))
+	for _, r := range runs {
+		sc.s.enqueueTimeoutRun(triggeredRun{agentKey: r.AgentKey, title: r.Title, message: r.Message, timeoutRunID: r.ID}, fmt.Sprintf("r%d", r.ID))
+	}
+	deliveries, err := sc.pg.PendingTimeoutDeliveries()
+	if err != nil {
+		log.Printf("[scheduler] timeout deliveries: %v", err)
+		return
+	}
+	for _, d := range deliveries {
+		sc.s.enqueueTimeoutRun(triggeredRun{agentKey: d.AgentKey, title: fmt.Sprintf("超时触发 · task#%d", d.TaskID), message: d.Message + "\n\n【本次由任务超时触发】", taskID: d.TaskID, taskDesc: d.Description, taskGoal: d.Goal, mergeable: true, timeoutDeliveryIDs: []int64{d.ID}}, fmt.Sprintf("d%d", d.ID))
+	}
 }
 
 // fireTaskCreates fires on_task_create triggers for tasks newly created above the

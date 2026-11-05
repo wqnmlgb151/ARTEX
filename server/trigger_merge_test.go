@@ -39,6 +39,31 @@ func TestMergeAllRunsWritesTaskGoalOnce(t *testing.T) {
 	}
 }
 
+func TestTimeoutMergeKeepsDurableDeliveryIDs(t *testing.T) {
+	items := sameTaskFires(2)
+	items[0].timeoutDeliveryIDs = []int64{101}
+	items[1].timeoutDeliveryIDs = []int64{102}
+	items[0].timeoutQueueKeys = []string{"d101"}
+	items[1].timeoutQueueKeys = []string{"d102"}
+	for _, out := range []triggeredRun{mergeAllRuns(items), mergeTriggeredRuns(items)} {
+		if len(out.timeoutDeliveryIDs) != 2 || len(out.timeoutQueueKeys) != 2 {
+			t.Fatalf("lost durable batch metadata: %+v", out)
+		}
+	}
+	s := &Server{triggerQ: map[string][]triggeredRun{"a": {
+		{agentKey: "a", message: "new", timeoutDeliveryIDs: []int64{1}},
+		{agentKey: "a", message: "recovered", timeoutRunID: 7},
+		{agentKey: "a", message: "new2", timeoutDeliveryIDs: []int64{2}},
+	}}}
+	out := s.nextTriggerRun("a", triggerBehavior{mergeMode: "all"})
+	if len(out.timeoutDeliveryIDs) != 2 || strings.Contains(out.message, "recovered") {
+		t.Fatal("recovery merged into a new conversation")
+	}
+	if next := s.nextTriggerRun("a", triggerBehavior{mergeMode: "all"}); next.timeoutRunID != 7 {
+		t.Fatal("recovery identity lost")
+	}
+}
+
 func TestMergeAllRunsGroupsInterleavedTasks(t *testing.T) {
 	// Fires from two tasks arriving interleaved (A,B,A,B) must still carry each
 	// task's context exactly once — grouping, not per-event repetition.
