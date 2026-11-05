@@ -240,12 +240,6 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	release, allowed := s.beginLogin(w, r)
-	if !allowed {
-		return
-	}
-	failed := false
-	defer func() { release(failed) }()
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -254,6 +248,13 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
+	// Reading a slow request body must not hold the shared credential-check lock.
+	release, allowed := s.beginLogin(w, r)
+	if !allowed {
+		return
+	}
+	failed := false
+	defer func() { release(failed) }()
 	if req.Username != "ARTEX" {
 		failed = true
 		writeErr(w, 401, "用户名或密码错误")

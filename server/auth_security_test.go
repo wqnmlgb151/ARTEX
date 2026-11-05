@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +17,58 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+func TestAuthStreamExpires(t *testing.T) {
+	s := authTestServer(t)
+	const hash = "test-persistent-credential-version"
+	if err := s.m.pg.SetSetting(authPassKey, hash); err != nil {
+		t.Fatal(err)
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, authClaims{
+		Epoch:            authEpoch(hash),
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "ARTEX", ExpiresAt: jwt.NewNumericDate(time.Now().Add(3 * time.Second))},
+	}).SignedString(s.jwtKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	r := httptest.NewRequestWithContext(ctx, "GET", "/api/stream", nil)
+	r.Header.Set("Accept", "text/event-stream")
+	r.Header.Set("Authorization", "Bearer "+token)
+	started := false
+	s.requireAuth(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		started = true
+		<-r.Context().Done()
+	})).ServeHTTP(httptest.NewRecorder(), r)
+	if !started || ctx.Err() != nil {
+		t.Fatal("stream was not authenticated or remained open after JWT expiration")
+	}
+}
+
+func TestAuthSlowBodyDoesNotLockOtherLogins(t *testing.T) {
+	s := authTestServer(t)
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.authLogin(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/auth/login", reader))
+	}()
+	// A pipe write completes only after the handler starts decoding the body.
+	if _, err := writer.Write([]byte(`{"username":`)); err != nil {
+		t.Fatal(err)
+	}
+	available := s.loginLimit.mu.TryLock()
+	if available {
+		s.loginLimit.mu.Unlock()
+	}
+	writer.Close()
+	<-done
+	if !available {
+		t.Fatal("incomplete login body holds the limiter lock")
+	}
+}
 
 func authTestServer(t *testing.T) *Server {
 	t.Helper()

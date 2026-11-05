@@ -71,7 +71,8 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 503, errDataSourceUnavailable)
 			return
 		}
-		if !validSession(extractToken(r), s.jwtKey, hash) {
+		token := extractToken(r)
+		if !validSession(token, s.jwtKey, hash) {
 			writeErr(w, 401, "会话无效或已过期，请重新登录")
 			return
 		}
@@ -93,7 +94,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 						var current string
 						err := pg.QueryRowContext(check, `SELECT value FROM settings WHERE key=$1`, authPassKey).Scan(&current)
 						stop()
-						if err != nil || current != hash {
+						if err != nil || !validSession(token, s.jwtKey, current) {
 							cancel()
 							return
 						}
