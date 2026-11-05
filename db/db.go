@@ -279,39 +279,44 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultInterceptRulesV3(); err != nil {
 		return fmt.Errorf("seed intercept rules v3: %w", err)
 	}
-	if err := d.seedDefaultAssetInterceptRules(); err != nil {
-		return fmt.Errorf("seed asset intercept rules: %w", err)
+	if err := d.retireDefaultAssetInterceptRules(); err != nil {
+		return fmt.Errorf("retire default asset intercept rules: %w", err)
 	}
 	return nil
 }
 
-// seedDefaultAssetInterceptRules inserts the built-in asset blocklist (fuzzy
-// domain matches for government / education sites) once on first startup. Gated
-// by a settings flag so a user's later disable/delete is never resurrected on
-// restart — same policy as the intercept-rule seed.
-func (d *DB) seedDefaultAssetInterceptRules() error {
-	if v, _, _ := d.GetSetting("asset_intercept_default_rules_v1"); v == "done" {
+// retireDefaultAssetInterceptRules removes the original shipped domain blocklist
+// once. Custom rules and edited built-ins are preserved; new installs seed none.
+func (d *DB) retireDefaultAssetInterceptRules() error {
+	const flag = "asset_intercept_retire_defaults_v2"
+	v, _, err := d.GetSetting(flag)
+	if err != nil {
+		return err
+	}
+	if v == "done" {
 		return nil
 	}
-	rules := []struct {
-		kind    string
-		pattern string
-		note    string
-	}{
-		{"fuzzy_domain", ".gov", "[内置] 政府网站 (.gov)"},
-		{"fuzzy_domain", ".gov.cn", "[内置] 政府网站 (.gov.cn)"},
-		{"fuzzy_domain", ".edu", "[内置] 教育网站 (.edu)"},
-		{"fuzzy_domain", ".edu.cn", "[内置] 教育网站 (.edu.cn)"},
+	tx, err := d.Begin()
+	if err != nil {
+		return err
 	}
-	for _, r := range rules {
-		if _, err := d.Exec(`
-INSERT INTO asset_intercept_rules(enabled, kind, pattern, note, builtin)
-VALUES (true, $1, $2, $3, true)
-ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
-			return fmt.Errorf("asset rule %q: %w", r.pattern, err)
-		}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+DELETE FROM asset_intercept_rules
+WHERE builtin AND kind = 'fuzzy_domain' AND (pattern, note) IN (
+    ('.gov', '[内置] 政府网站 (.gov)'),
+    ('.gov.cn', '[内置] 政府网站 (.gov.cn)'),
+    ('.edu', '[内置] 教育网站 (.edu)'),
+    ('.edu.cn', '[内置] 教育网站 (.edu.cn)')
+)`); err != nil {
+		return err
 	}
-	return d.SetSetting("asset_intercept_default_rules_v1", "done")
+	if _, err := tx.Exec(`
+INSERT INTO settings(key, value) VALUES ($1, 'done')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, flag); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // builtinSkillVisibility maps a shipped skill's directory name → the built-in
