@@ -5,9 +5,23 @@ import (
 	"testing"
 )
 
-func TestProxyEnvEmptyIsNil(t *testing.T) {
-	if env := proxyEnv("", ""); env != nil {
-		t.Fatalf("proxyEnv(\"\", \"\") = %v, want nil (direct)", env)
+func TestProxyEnvDirectClearsServerCredentials(t *testing.T) {
+	env := proxyEnv("", "")
+	for _, want := range []string{"ARTEX_PG_DSN=", "POSTGRES_PASSWORD=", "ANTHROPIC_API_KEY=", "OPENAI_API_KEY=", "ARTEX_UPDATE_GITHUB_TOKEN="} {
+		found := false
+		for _, entry := range env {
+			if entry == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("direct child environment does not clear %s", want)
+		}
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "HTTP_PROXY=") {
+			t.Fatal("direct connection unexpectedly configured a proxy")
+		}
 	}
 }
 

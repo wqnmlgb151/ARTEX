@@ -41,18 +41,14 @@ export default function LoginPage() {
   }, [termsOpen]);
 
   useEffect(() => {
-    // 已登录直接进主界面（静态导出下无 middleware 代劳这层跳转）。
-    const token = auth.getToken();
-    if (token) {
-      // localStorage 可能仍有凭据但 cookie 已丢失。先同步，再发起全新请求，
-      // 避免服务端守卫或路由缓存把跳转送回仍处于 checking 状态的登录页。
-      auth.setToken(token);
-      window.location.replace("/function/tasks");
-      return;
-    }
+    auth.clearLegacyToken();
     api
       .authStatus()
-      .then(({ initialized }) => {
+      .then(({ initialized, authenticated }) => {
+        if (authenticated) {
+          window.location.replace("/function/tasks");
+          return;
+        }
         if (!initialized) router.replace("/setup");
       })
       .catch(() => setError("无法连接到后端服务"))
@@ -68,11 +64,10 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.login("ARTEX", password);
-      auth.setToken(token);
+      await api.login("ARTEX", password);
       window.location.replace("/function/tasks");
-    } catch {
-      setError("用户名或密码错误");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登录失败");
     } finally {
       setLoading(false);
     }

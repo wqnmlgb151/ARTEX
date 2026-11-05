@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { EllipsisVertical, KeyRound, LogOut } from "lucide-react";
+import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -31,11 +32,13 @@ export function NavUser({
   const { isMobile } = useSidebar();
   const [pwOpen, setPwOpen] = React.useState(false);
 
-  function handleLogout() {
-    auth.clearToken();
-    // 硬跳转：让浏览器用已清除的 cookie 发起全新请求，
-    // middleware 才能正确读到空 token 并放行 /login
-    window.location.href = "/login";
+  async function handleLogout() {
+    try {
+      await auth.logout();
+      window.location.replace("/login");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "注销失败");
+    }
   }
 
   return (

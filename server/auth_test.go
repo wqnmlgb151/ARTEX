@@ -5,7 +5,32 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
+
+// HTTP integration fixtures now need an initialized, persistent credential
+// version, just like a real authenticated installation.
+func signTestJWT(s *Server) (string, error) {
+	hash, _, err := s.m.pg.GetSetting(authPassKey)
+	if err != nil {
+		return "", err
+	}
+	if hash == "" {
+		generated, err := bcrypt.GenerateFromPassword([]byte("integration-test-password"), bcrypt.MinCost)
+		if err != nil {
+			return "", err
+		}
+		if _, err = s.m.pg.InsertSettingIfAbsent(authPassKey, string(generated)); err != nil {
+			return "", err
+		}
+		hash, _, err = s.m.pg.GetSetting(authPassKey)
+		if err != nil {
+			return "", err
+		}
+	}
+	return signJWT(s.jwtKey, hash)
+}
 
 // GetSetting 对"键不存在"和"读取出错"的返回值只差一个 error：两种情况 value 都是
 // 空串。密码相关的 handler 一旦把 error 当成"还没设置密码"，就会在数据库抖动期间

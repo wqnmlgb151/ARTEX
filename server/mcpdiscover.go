@@ -6,10 +6,12 @@ import (
 	"log"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/mcphttp"
 	"github.com/Autumn-27/norma/mcp"
 	actool "github.com/Autumn-27/norma/tool"
+	"strings"
 )
 
 // mcpClient is the shared surface of a connected MCP server (stdio, Streamable HTTP,
@@ -27,7 +29,15 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 		if m.Command == "" {
 			return nil, fmt.Errorf("stdio 传输缺少命令")
 		}
-		return mcp.NewStdioClient(ctx, m.Name, m.Command, jsonStrMap(m.Env), jsonStrSlice(m.Args)...)
+		env := map[string]string{}
+		for _, entry := range agent.ChildSecretOverrides() {
+			key, value, _ := strings.Cut(entry, "=")
+			env[key] = value
+		}
+		for key, value := range jsonStrMap(m.Env) {
+			env[key] = value
+		}
+		return mcp.NewStdioClient(ctx, m.Name, m.Command, env, jsonStrSlice(m.Args)...)
 	case "http":
 		if m.URL == "" {
 			return nil, fmt.Errorf("http 传输缺少 URL")
