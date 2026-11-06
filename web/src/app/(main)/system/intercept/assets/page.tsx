@@ -108,7 +108,7 @@ export default function AssetInterceptPage() {
   }, []);
 
   React.useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   function set(patch: Partial<RuleForm>) {
@@ -144,7 +144,7 @@ export default function AssetInterceptPage() {
         toast.success("规则已创建");
       }
       setOpen(false);
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -157,7 +157,7 @@ export default function AssetInterceptPage() {
     try {
       await api.deleteAssetInterceptRule(rule.id);
       toast.success("规则已删除");
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -166,7 +166,7 @@ export default function AssetInterceptPage() {
   async function handleToggle(rule: AssetInterceptRule) {
     try {
       await api.toggleAssetInterceptRule(rule.id, !rule.enabled);
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     }

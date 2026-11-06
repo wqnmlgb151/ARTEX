@@ -1,16 +1,17 @@
 "use client";
 
 import * as React from "react";
+
 import {
-  RadioIcon,
-  SearchIcon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  Loader2Icon,
-  XIcon,
-  Trash2Icon,
   CopyIcon,
-  CheckIcon,
+  Loader2Icon,
+  RadioIcon,
+  SearchIcon,
+  Trash2Icon,
+  XIcon,
 } from "lucide-react";
 
 import {
@@ -23,30 +24,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import type { LLMRecordItem, LLMRecordDetail, LLMTask } from "@/lib/types";
+import type { LLMRecordDetail, LLMRecordItem, LLMTask } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 function fmtTime(ts: string) {
   return new Date(ts).toLocaleString("zh-CN", {
@@ -80,7 +67,12 @@ function tryFormatJSON(s: string): string {
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = React.useState(false);
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  React.useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
 
   const disabled = !text;
   const copy = async () => {
@@ -95,7 +87,11 @@ function CopyButton({ text }: { text: string }) {
       ta.style.opacity = "0";
       document.body.appendChild(ta);
       ta.select();
-      try { document.execCommand("copy"); } catch { /* 忽略：不支持则静默 */ }
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* 忽略：不支持则静默 */
+      }
       document.body.removeChild(ta);
     }
     setCopied(true);
@@ -151,25 +147,28 @@ export default function LLMRecordsPage() {
   const reqText = showRaw
     ? detail?.raw_request && tryFormatJSON(detail.raw_request)
     : detail?.request_body && tryFormatJSON(detail.request_body);
-  const respText = showRaw
-    ? detail?.raw_response
-    : detail?.response_body && tryFormatJSON(detail.response_body);
+  const respText = showRaw ? detail?.raw_response : detail?.response_body && tryFormatJSON(detail.response_body);
 
   // Per-task delete (task picker + confirm dialog)
   const [tasks, setTasks] = React.useState<LLMTask[]>([]);
   const [pickedTask, setPickedTask] = React.useState("");
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
-  const [reloadTick, setReloadTick] = React.useState(0); // manual refetch trigger
 
   // Load recording toggle state on mount.
   React.useEffect(() => {
     let alive = true;
     api
       .settings()
-      .then((s) => { if (alive) setRecEnabled(!!s.llm_record); })
-      .catch(() => {});
-    return () => { alive = false; };
+      .then((s) => {
+        if (alive) setRecEnabled(!!s.llm_record);
+      })
+      .catch(() => {
+        /* 开关状态读不到时保持默认关闭，不影响列表浏览 */
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const toggleRecording = async (on: boolean) => {
@@ -191,30 +190,48 @@ export default function LLMRecordsPage() {
     return () => clearTimeout(t);
   }, [session]);
 
-  // Reset page on filter change.
-  React.useEffect(() => {
+  // 过滤条件（下拉/输入）变了就回到第一页。用渲染期比较代替 effect：effect 版本
+  // 只能把过滤项塞进依赖数组却不在函数体里读，既触发 linter 也容易和加载 effect
+  // 抢时序；这里在渲染时发现过滤组合变化就同步纠正页码。
+  const filterKey = JSON.stringify([model, sessionQ, pickedTask, size]);
+  const [prevFilterKey, setPrevFilterKey] = React.useState(filterKey);
+  if (prevFilterKey !== filterKey) {
+    setPrevFilterKey(filterKey);
     setPage(0);
-  }, [sessionQ, model, size, pickedTask]);
+  }
 
-  // Load list.
-  React.useEffect(() => {
-    let alive = true;
+  // Load list. 抽成 callback 以便删除后在同页码下主动重取。
+  // loadSeq：带序号的请求守卫 —— 过滤条件连续变化时，先发后到的慢响应必须被丢弃，
+  // 否则会把新条件的结果覆盖成旧数据（原 effect 的 alive 标志只防卸载，不防乱序）。
+  const loadSeq = React.useRef(0);
+  const loadRecords = React.useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    api
-      .llmRecords({ model: model || undefined, session: sessionQ || undefined, task: pickedTask || undefined, page, size })
-      .then((r) => {
-        if (!alive) return;
-        setRecords(r.records ?? []);
-        setTotal(r.total ?? 0);
-      })
-      .catch(() => {})
-      .finally(() => alive && setLoading(false));
-    api
-      .llmTasks()
-      .then((r) => { if (alive) setTasks(r.tasks ?? []); })
-      .catch(() => {});
-    return () => { alive = false; };
-  }, [page, size, sessionQ, model, pickedTask, reloadTick]);
+    try {
+      const [r, t] = await Promise.all([
+        api.llmRecords({
+          model: model || undefined,
+          session: sessionQ || undefined,
+          task: pickedTask || undefined,
+          page,
+          size,
+        }),
+        api.llmTasks(),
+      ]);
+      if (seq !== loadSeq.current) return; // 已有更新的请求在飞，丢弃这批结果
+      setRecords(r.records ?? []);
+      setTotal(r.total ?? 0);
+      setTasks(t.tasks ?? []);
+    } catch {
+      /* 保留上一次列表；错误提示由 api 层统一处理 */
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
+  }, [page, size, sessionQ, model, pickedTask]);
+
+  React.useEffect(() => {
+    void loadRecords();
+  }, [loadRecords]);
 
   // Delete every LLM record for the picked task, then refetch.
   const confirmDelete = () => {
@@ -226,10 +243,14 @@ export default function LLMRecordsPage() {
         setSelected(null);
         setDetail(null);
         setPickedTask("");
+        // 只有“页码和任务过滤都没变”时加载 effect 才不会重跑，这时补一次主动重取；
+        // 否则 effect 会因依赖变化自动刷新，避免重复请求。
+        if (page === 0 && pickedTask === "") void loadRecords();
         setPage(0);
-        setReloadTick((t) => t + 1);
       })
-      .catch(() => {})
+      .catch(() => {
+        /* 删除失败保留当前列表，由对话框内的错误提示反馈 */
+      })
       .finally(() => setDeleting(false));
   };
 
@@ -244,10 +265,18 @@ export default function LLMRecordsPage() {
     setDetail(null);
     api
       .llmRecordDetail(selected.id)
-      .then((d) => { if (alive) setDetail(d); })
-      .catch(() => {})
-      .finally(() => { if (alive) setDetailLoading(false); });
-    return () => { alive = false; };
+      .then((d) => {
+        if (alive) setDetail(d);
+      })
+      .catch(() => {
+        /* 详情读取失败时保持空详情，列表行仍可操作 */
+      })
+      .finally(() => {
+        if (alive) setDetailLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, [selected]);
 
   const totalPages = Math.max(1, Math.ceil(total / size));
@@ -276,12 +305,7 @@ export default function LLMRecordsPage() {
             className="h-8 pl-8"
           />
         </div>
-        <Input
-          placeholder="Model"
-          className="h-8 w-48"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-        />
+        <Input placeholder="Model" className="h-8 w-48" value={model} onChange={(e) => setModel(e.target.value)} />
         <Select value={pickedTask} onValueChange={setPickedTask}>
           <SelectTrigger size="sm" className="w-56">
             <SelectValue placeholder="选择任务…" />
@@ -407,15 +431,10 @@ export default function LLMRecordsPage() {
                   records.map((rec) => (
                     <TableRow
                       key={rec.id}
-                      className={cn(
-                        "cursor-pointer",
-                        selected?.id === rec.id && "bg-accent hover:bg-accent",
-                      )}
+                      className={cn("cursor-pointer", selected?.id === rec.id && "bg-accent hover:bg-accent")}
                       onClick={() => setSelected(rec)}
                     >
-                      <TableCell className="text-xs text-muted-foreground tabular-nums">
-                        {fmtTime(rec.ts)}
-                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(rec.ts)}</TableCell>
                       <TableCell className="text-xs font-mono text-muted-foreground">
                         {rec.task_id ? `#${rec.task_id}` : "-"}
                       </TableCell>
@@ -442,9 +461,13 @@ export default function LLMRecordsPage() {
                       </TableCell>
                       <TableCell>
                         {rec.status === "ok" ? (
-                          <Badge variant="secondary" className="text-xs text-emerald-600">OK</Badge>
+                          <Badge variant="secondary" className="text-xs text-emerald-600">
+                            OK
+                          </Badge>
                         ) : (
-                          <Badge variant="destructive" className="text-xs">Error</Badge>
+                          <Badge variant="destructive" className="text-xs">
+                            Error
+                          </Badge>
                         )}
                       </TableCell>
                     </TableRow>
@@ -474,16 +497,18 @@ export default function LLMRecordsPage() {
                   任务 #{selected.task_id}
                 </Badge>
               )}
-              <span className="text-xs text-muted-foreground">
-                {fmtTime(selected.ts)}
-              </span>
+              <span className="text-xs text-muted-foreground">{fmtTime(selected.ts)}</span>
               <span className={cn("text-xs", selected.latency_ms > 30000 && "text-amber-500")}>
                 {fmtLatency(selected.latency_ms)}
               </span>
               {selected.status === "ok" ? (
-                <Badge variant="secondary" className="text-xs text-emerald-600">OK</Badge>
+                <Badge variant="secondary" className="text-xs text-emerald-600">
+                  OK
+                </Badge>
               ) : (
-                <Badge variant="destructive" className="text-xs">Error</Badge>
+                <Badge variant="destructive" className="text-xs">
+                  Error
+                </Badge>
               )}
               {/* 原文视图开关。旧记录没有原文，此时禁用而非静默回退，避免看着像
                   「原文与解析一致」。 */}
@@ -497,12 +522,7 @@ export default function LLMRecordsPage() {
               >
                 原文
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7 shrink-0"
-                onClick={() => setSelected(null)}
-              >
+              <Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={() => setSelected(null)}>
                 <XIcon />
               </Button>
             </div>
@@ -520,9 +540,7 @@ export default function LLMRecordsPage() {
                       加载…
                     </div>
                   ) : (
-                    <pre className="p-3 font-mono text-xs break-all whitespace-pre-wrap">
-                      {reqText || "（空）"}
-                    </pre>
+                    <pre className="p-3 font-mono text-xs break-all whitespace-pre-wrap">{reqText || "（空）"}</pre>
                   )}
                 </div>
               </div>
@@ -538,10 +556,12 @@ export default function LLMRecordsPage() {
                       加载…
                     </div>
                   ) : (
-                    <pre className={cn(
-                      "p-3 font-mono text-xs break-all whitespace-pre-wrap",
-                      selected.status !== "ok" && "text-red-600 dark:text-red-400",
-                    )}>
+                    <pre
+                      className={cn(
+                        "p-3 font-mono text-xs break-all whitespace-pre-wrap",
+                        selected.status !== "ok" && "text-red-600 dark:text-red-400",
+                      )}
+                    >
                       {respText || "（空）"}
                     </pre>
                   )}
