@@ -91,6 +91,8 @@ jobs:
         run: sha256sum *.zip > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          draft: true
+          fail_on_unmatched_files: true
           files: |
             dist/*.zip
             dist/SHA256SUMS
@@ -99,6 +101,7 @@ jobs:
   # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
   #    镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）
   docker:
+    if: github.repository == 'Autumn-27/ARTEX'
     needs: binaries
     runs-on: ubuntu-latest
     steps:

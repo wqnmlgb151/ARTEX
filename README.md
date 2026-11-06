@@ -3,7 +3,10 @@
 # ARTEX
 
 AI 自主渗透测试系统（Go 后端 + Next.js 前端）
-本仓库为 ARTEX 的二次维护分支。当前默认 Docker 镜像和在线更新仍指向上游，不包含本分支的修复；部署本分支请从本仓库源码构建，安全配置与验证结果见 [部署说明](docs/admin-security.md) 和 [验证报告](docs/fix-validation.md)。
+
+本项目是基于 ARTEX v0.3.15 的二次开发分支，源码继承自 [Hinln/ARTEX 备份](https://github.com/Hinln/ARTEX)。原作者已停止公开更新与维护，原仓库目前无法公开访问。[原仓库](https://github.com/Autumn-27/ARTEX) · [停更报道](https://www.investing.com/news/economy-news/chinese-developer-makes-artex-ai-agent-closedsource-after-korean-bank-hack-4940102)
+
+原 Docker 镜像 [`autumn27/artex`](https://hub.docker.com/r/autumn27/artex) 已无法公开获取。部署本分支请从本仓库源码构建，安全配置与验证结果见 [部署说明](docs/admin-security.md) 和 [验证报告](docs/fix-validation.md)。
 
 
 🌐 **在线 Demo**： [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/)
@@ -70,27 +73,18 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 ### 方式一：一键安装脚本（推荐）
 
 ```bash
-git clone https://github.com/Hinln/ARTEX.git
+git clone https://github.com/wqnmlgb151/ARTEX.git
 cd ARTEX
 ./install.sh
 ```
 
-脚本会：检测 / 自动安装 Docker → 让你选 **① 全部 Docker** 或 **② 本地编译运行**：
-
-- **① 全部 Docker**：填一个 Postgres 密码（可回车随机）→ 自动写 `.env` → `docker compose up -d`。
-- **② 本地运行**：选数据库（连已有 / 用 Docker 起一个）→ 生成 `config.json` → `go` 编译内嵌单二进制 → 启动。
+请选择 **② 本地编译运行**。脚本会引导配置 PostgreSQL（连接已有数据库或通过 Docker 启动一个），然后编译并启动 ARTEX。选项 **① 全部 Docker** 依赖已失效的原镜像。
 
 装好后打开 **http://localhost:8787**（首次进入 `/setup` 设置管理员密码）。
 
 ### 方式二：Docker Compose（手动）
 
-```bash
-git clone https://github.com/Hinln/ARTEX.git
-cd ARTEX
-cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 autumn27/artex 镜像 + postgres
-# → http://localhost:8787
-```
+按 [Dockerfile](Dockerfile) 开头的步骤从本仓库源码构建本地镜像。在部署用的 Compose 配置中，将 `artex` 服务的 `image` 改为本地镜像名。复制 `.env.example` 为 `.env` 并填写 `POSTGRES_PASSWORD` 后，运行 `docker compose up -d`，然后访问 `http://localhost:8787`。
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
 
@@ -101,14 +95,14 @@ docker compose up -d          # 拉取 autumn27/artex 镜像 + postgres
 
 ### 方式三：下载预编译二进制（Releases）
 
-到 [Releases](https://github.com/Hinln/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：
+从 [本仓库的 Releases](https://github.com/wqnmlgb151/ARTEX/releases) 下载对应平台的预编译包，按 `SHA256SUMS` 校验后解压并启动：
 
 ```bash
 cp config.example.json config.json   # 填好 database 连接
 ./start.sh                           # → http://localhost:8787
 ```
 
-> 请用 `start.sh` / `start.bat` 启动，而不是直接跑 `./artex`。它是个守护脚本：程序退出后按退出码决定是否重新拉起，**页面上的[一键更新](#方式一页面一键更新推荐)靠它完成换装**。直接运行 `./artex` 时更新完就不会被拉起了。
+> 请用 `start.sh` / `start.bat` 启动，而不是直接跑 `./artex`。它是个守护脚本：程序退出后按退出码决定是否重新拉起，**页面上的[一键更新](#方式一页面一键更新)靠它完成换装**。直接运行 `./artex` 时更新完就不会被拉起了。
 > 后台常驻：`nohup ./start.sh >artex.log 2>&1 &`。
 
 ### 方式四：从源码编译单二进制
@@ -145,22 +139,9 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 > 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
 
-### 本仓库的私有 Release 更新源
+### 方式一：页面一键更新
 
-页面一键更新固定从 [Hinln/ARTEX Releases](https://github.com/Hinln/ARTEX/releases) 检查和下载版本。克隆或通过 Git 更新源码也使用 `Hinln/ARTEX`；原项目的 Go module 路径保持不变。
-
-这是私有仓库。请为运行 ARTEX 的后端进程设置 `ARTEX_UPDATE_GITHUB_TOKEN`，令牌只需本仓库的 **Contents: read** 权限。令牌由后端用于查询 Release 和下载附件，不发送给浏览器，也不要提交到 Git。
-
-```bash
-# 先在当前 shell 或服务环境中安全设置 ARTEX_UPDATE_GITHUB_TOKEN
-./start.sh
-```
-
-本地直接启动时，`start.sh` 不会自动读取 `.env`；必须将变量导出到进程环境。Docker Compose 部署则可在未纳入 Git 的 `.env` 中填写该变量，并重建 artex 容器；镜像需要包含本分支的更新代码，旧版镜像不会因此切换升级源。
-
-需要先在本仓库发布非 draft、非 prerelease 的正式 Release，并附上 `artex-<版本>-<os>-<arch>.zip` 和 `SHA256SUMS`，页面才能提供可安装更新。仓库里只有源码时还不能在线升级。现有 Release 工作流会在推送 `v*` tag 时为当前仓库生成这些附件。
-
-### 方式一：页面一键更新（推荐）
+> 页面一键更新仍固定查询 [Hinln/ARTEX Releases](https://github.com/Hinln/ARTEX/releases)。更新本分支请使用本仓库的预编译包，或从 `wqnmlgb151/ARTEX` 拉取源码并重新构建。
 
 在 **系统配置** 页（侧边栏「系统配置」→ `/system/settings`）的**版本与更新**卡片里，可以直接检查并安装新版本，无需登录服务器。
 
@@ -170,7 +151,7 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 - **随时可回退**：上一版本保留为 `artex.old`，卡片上有「回滚到上一版本」。注意数据库结构不会回退。
 - **更新会中断正在运行的任务**——更新即重启，请在空闲时进行。
 - **开发构建不给更新**：版本号是 `dev` 或 `git describe` 带后缀时禁用，避免正式版覆盖掉本地调试的二进制。
-- **Docker 下只换程序、不换镜像**：镜像里的 playwright / nmap 等工具链不会跟着升级，且 `docker compose up -d` 重建容器后会退回镜像自带的版本。要连镜像一起升级仍请用 `docker compose pull artex && docker compose up -d artex`。
+- **Docker 下只换程序、不换镜像**：镜像里的 playwright / nmap 等工具链不会跟着升级，且 `docker compose up -d` 重建容器后会退回镜像自带的版本。更新镜像请按下文重新构建。
 - 访问 GitHub 需要代理时，在同一页面配置**全局代理**即可，更新链路会走它。更新只从 GitHub 域名下载并强制 HTTPS。
 
 ### 方式二：一键更新脚本
@@ -182,23 +163,16 @@ cd ARTEX
 
 脚本先可选 `git pull` 拉取最新代码，再让你选 **① Docker 更新** 或 **② 本地编译更新**（与 `install.sh` 对应）：
 
-- **① Docker**：可指定目标镜像 tag（回车沿用 `.env` 的 `ARTEX_TAG`，缺省 `latest`）→ `docker compose pull` → `docker compose up -d`（换新镜像重启即自动迁移）。
+- **① Docker**：依赖原镜像源，请改用下文的本地镜像更新方式。
 - **② 本地**：重建前端静态产物 → 重新编译 `./artex`（完成后重启进程生效）。
 
 ### 方式三：Docker Compose（手动）
 
-```bash
-cd ARTEX
-git pull                       # 更新 compose / 脚本（可选）
-# 指定版本：在 .env 设 ARTEX_TAG=v0.2.0；不设则用 latest
-docker compose pull artex
-docker compose up -d artex     # 换新镜像重启 → 自动迁移 schema
-docker image prune -f          # 清理旧镜像（可选）
-```
+拉取本仓库最新源码后，按 [Dockerfile](Dockerfile) 重新构建镜像，更新 Compose 配置中的 `artex` 镜像名或标签，再运行 `docker compose up -d artex`。
 
 ### 方式四：预编译二进制（Releases）
 
-到 [Releases](https://github.com/Hinln/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
+从 [本仓库的 Releases](https://github.com/wqnmlgb151/ARTEX/releases) 下载并校验对应平台的预编译包。停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），然后重启：
 
 ```bash
 cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
