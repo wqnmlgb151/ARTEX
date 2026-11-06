@@ -518,9 +518,9 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	out["related_tasks"] = t.relatedTaskOverviews()
 	// coverage：粗略的资产测试覆盖度参考——范围(task_scope)内的资产里，被 fact 碰过的
 	// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
-	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，
-	// 丢弃 denominator/tested/pct/by_type/note 等覆盖度度量，避免污染上下文、也不诱导
-	// 已隐藏的 add_task_scope/list_untested_assets。
+	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 scope/host_count(范围边界与目标主机的
+	// 感知信息)，丢弃 denominator/tested/pct/by_type/note 等覆盖度度量，避免污染上下文、
+	// 也不诱导已隐藏的 add_task_scope/list_untested_assets。
 	if t.as != nil && t.ts != nil && t.taskID > 0 {
 		{
 			m := map[string]any{}
@@ -538,6 +538,19 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 					}
 				}
 			}
+			// scope：当前任务实际圈定的测试范围（task_scope 原始行，当前任务在前、
+			// 直接来源任务的只读行在后，继承行带 source_task_id）。它回答的是
+			// “这个任务被授权打哪些目标”，不是“库里有哪些测试资产”，所以覆盖度开关
+			// 无关、始终提供。企业行会展开该企业的范围规则（只读上下文，用来对齐
+			// FOFA/资产归属），展开条数有上限，避免大企业拖垮每轮概览。
+			if rows, err := t.as.ListTaskScopeWithSources(t.taskID); err == nil && len(rows) > 0 {
+				if scope, omitted := t.taskScopeOverview(rows); len(scope) > 0 {
+					m["scope"] = scope
+					if omitted > 0 {
+						m["scope_truncated"] = omitted
+					}
+				}
+			}
 			if hosts, err := t.as.HostsByTaskWithSources(t.taskID); err == nil {
 				// 只给主机总数，不再把 host 列表平铺进 graph_overview（大范围任务里那是每轮
 				// 都重复携带的大量字符串，对规划决策价值有限）；具体主机按需 list_assets 查。
@@ -549,6 +562,187 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	return out
+}
+
+// graph_overview 的 coverage.scope 是有界视图：任务范围行本身、以及企业范围
+// 展开出来的规则都要封顶。一个绑定了几千条 IP/域名规则的企业，若每轮都把规则
+// 全量平铺进概览，会把规划上下文挤爆，所以这里按“单企业 + 全局”两道闸截断，
+// 并把被截掉的条数回传，由调用方写进 scope_truncated / company_scope_truncated。
+const (
+	scopeRowsCap                   = 200 // 一次概览最多列出的 task_scope 行
+	companyScopeRulesPerCompanyCap = 200 // 单个企业最多展开的规则条数
+	companyScopeRulesTotalCap      = 600 // 所有企业合计最多展开的规则条数
+	companyKeywordsPerCompanyCap   = 100 // 单个企业最多带出的关键词条数
+	companyKeywordsTotalCap        = 300 // 所有企业合计最多带出的关键词条数
+)
+
+// taskScopeOverview renders coverage.scope from task scope rows. rows are expected
+// to be ordered current-task-first (ListTaskScopeWithSources guarantees that), so
+// the first occurrence of a duplicated rule is the task's own — an inherited copy
+// never overwrites or re-labels a direct one. Company rows carry their id/name and,
+// when the CompanyStore is available, that company's scope rules (read-only
+// context: what the enterprise covers), while every other row carries the value
+// from the column its kind actually stores in (domain / net / value).
+//
+// It returns the rendered rows plus the number of task-scope rows dropped by the cap.
+func (t *ToolSet) taskScopeOverview(rows []db.TaskScope) (scope []map[string]any, omitted int) {
+	scope = make([]map[string]any, 0, min(len(rows), scopeRowsCap))
+	seen := make(map[string]struct{}, len(rows))
+	budget := scopeExpansionBudget{
+		rules:    companyScopeRulesTotalCap,
+		keywords: companyKeywordsTotalCap,
+	}
+	for _, r := range rows {
+		// Duplicate rule across the task and one of its sources: the current task's
+		// own row already says the same thing, so collapse it instead of listing the
+		// inherited copy a second time.
+		key := taskScopeRowKey(r)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(scope) >= scopeRowsCap {
+			omitted++
+			continue
+		}
+		e := map[string]any{"kind": r.Kind, "source": r.Source, "task_id": r.TaskID}
+		if r.TaskID != t.taskID {
+			// Inherited from a directly related source task: read-only, and labelled so
+			// the planner never mistakes it for this task's own authorization edge.
+			inheritedMap(e, r.TaskID)
+		}
+		if r.Reason != "" {
+			e["reason"] = r.Reason
+		}
+		switch {
+		case r.CompanyID != nil && *r.CompanyID > 0:
+			e["company_id"] = *r.CompanyID
+			if r.CompanyName != "" {
+				e["company_name"] = r.CompanyName
+			}
+			t.appendCompanyScope(e, *r.CompanyID, &budget)
+		case r.Domain != "":
+			e["value"] = r.Domain
+		case r.Net != "":
+			e["value"] = r.Net
+		case r.Value != "":
+			e["value"] = r.Value
+		}
+		scope = append(scope, e)
+	}
+	return scope, omitted
+}
+
+// scopeExpansionBudget caps how much company scope one overview may expand in
+// total, independently of the per-company caps.
+type scopeExpansionBudget struct {
+	rules    int
+	keywords int
+}
+
+// appendCompanyScope attaches a company's scope rules to its overview row. A
+// company that no longer exists (or whose rules cannot be read) degrades to the
+// bare id/name rather than erroring the whole overview.
+func (t *ToolSet) appendCompanyScope(e map[string]any, companyID int64, budget *scopeExpansionBudget) {
+	if t.cs == nil {
+		return
+	}
+	if e["company_name"] == nil {
+		// CompanyName is normally resolved by the scope query's LEFT JOIN; this only
+		// covers callers that hand us bare rows.
+		if company, err := t.cs.GetCompany(companyID); err == nil && company != nil && company.Name != "" {
+			e["company_name"] = company.Name
+		}
+	}
+	rules, err := t.cs.GetScope(companyID)
+	if err != nil || len(rules) == 0 {
+		return
+	}
+	applyCompanyScope(e, rules, budget)
+}
+
+// applyCompanyScope renders a company's scope rules onto its overview row under
+// the per-company and global caps. Kept free of store access so the rendering and
+// truncation rules can be tested without a database.
+func applyCompanyScope(e map[string]any, rules []db.ScopeRule, budget *scopeExpansionBudget) {
+	companyScope := make([]map[string]any, 0, min(len(rules), companyScopeRulesPerCompanyCap))
+	keywords := make([]string, 0)
+	seen := make(map[string]struct{}, len(rules))
+	truncated := 0
+	for _, rule := range rules {
+		value := scopeRuleValue(rule)
+		if value == "" {
+			continue
+		}
+		// Same rule twice (or ip/cidr rows covering the same key): keep the first.
+		key := rule.Kind + "\x00" + strings.ToLower(value)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(companyScope) >= companyScopeRulesPerCompanyCap || budget.rules <= 0 {
+			truncated++
+			continue
+		}
+		entry := map[string]any{"kind": rule.Kind, "value": value}
+		if rule.Reason != "" {
+			entry["reason"] = rule.Reason
+		}
+		companyScope = append(companyScope, entry)
+		budget.rules--
+		// Keywords are search terms the planner may feed into FOFA/测绘; keep the
+		// user's original text (raw), not the normalized matching value.
+		if rule.Kind == "keyword" && len(keywords) < companyKeywordsPerCompanyCap && budget.keywords > 0 {
+			keywords = append(keywords, value)
+			budget.keywords--
+		}
+	}
+	if len(companyScope) > 0 {
+		e["company_scope"] = companyScope
+	}
+	if len(keywords) > 0 {
+		e["company_keywords"] = keywords
+	}
+	if truncated > 0 {
+		e["company_scope_truncated"] = truncated
+	}
+}
+
+// taskScopeRowKey identifies a scope rule independently of which task recorded it,
+// so an inherited copy of a direct rule collapses into the direct row.
+func taskScopeRowKey(r db.TaskScope) string {
+	switch {
+	case r.CompanyID != nil && *r.CompanyID > 0:
+		return "company:" + strconv.FormatInt(*r.CompanyID, 10)
+	case r.Domain != "":
+		return r.Kind + ":domain:" + strings.ToLower(r.Domain)
+	case r.Net != "":
+		// ip and cidr are two spellings of the same range: collapse them together.
+		return "net:" + r.Net
+	case r.Value != "":
+		return r.Kind + ":value:" + strings.ToLower(r.Value)
+	default:
+		// 畸形行（kind 有值但三个载荷列都空，schema 下不该出现）：不要按 kind 归并，
+		// 否则同类的多行会被折叠成一条、把"范围里少了东西"藏起来。用行号保证一行不漏。
+		return r.Kind + ":row:" + strconv.FormatInt(r.ID, 10)
+	}
+}
+
+// scopeRuleValue returns the display value of a company scope rule. Raw is the
+// text the user actually typed (stable across normalization) and is what the
+// planner should see; the kind-specific column is the fallback when raw is absent.
+func scopeRuleValue(rule db.ScopeRule) string {
+	if v := strings.TrimSpace(rule.Raw); v != "" {
+		return v
+	}
+	switch rule.Kind {
+	case "domain":
+		return rule.Domain
+	case "ip", "cidr":
+		return rule.Net
+	default:
+		return rule.Value
+	}
 }
 
 func inheritedMap(m map[string]any, sourceTaskID int64) map[string]any {

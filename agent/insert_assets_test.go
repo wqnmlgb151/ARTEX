@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -10,14 +11,22 @@ import (
 )
 
 // testDB opens a DB connection, skipping if PG is unavailable.
+//
+// 例外：显式设置了 ARTEX_PG_DSN（CI 就是这样把测试库喂进来的）时，连不上属于
+// 真失败而不是"环境缺失"。否则 postgres service 挂掉 / schema 应用失败都会让
+// agent 包的集成用例静默 SKIP，CI 仍然整片绿 —— 这正是本仓
+// docs/漏洞流量证据.md 里"确认没有配置缺失导致的跳过"要防的情况。
 func testDB(t *testing.T) *db.DB {
 	t.Helper()
-	dsn, _, err := db.DSN()
+	dsn, source, err := db.DSN()
 	if err != nil {
 		t.Skipf("no database config (%v)", err)
 	}
 	d, err := db.Open(dsn)
 	if err != nil {
+		if strings.TrimSpace(os.Getenv("ARTEX_PG_DSN")) != "" {
+			t.Fatalf("postgres unavailable though ARTEX_PG_DSN is set (%s): %v", source, err)
+		}
 		t.Skipf("postgres unavailable (%v)", err)
 	}
 	return d

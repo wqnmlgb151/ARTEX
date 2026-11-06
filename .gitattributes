@@ -1,2 +1,20 @@
 *.bat text eol=crlf
 *.sh  text eol=lf
+
+# Web 前端源码统一 LF：Biome 的 formatter 配置为 lineEnding=lf，而 Windows 上
+# core.autocrlf=true 的检出会给出 CRLF 工作区，`npm run check` 于是把每个文件都
+# 报成 format 错误（Linux CI 是 LF 检出，不会报）。钉死 eol=lf 后两边结果一致。
+# 只按文本扩展名声明，避免把 public/ 下的图片等二进制资产当文本转换。
+web/**/*.ts   text eol=lf
+web/**/*.tsx  text eol=lf
+web/**/*.js   text eol=lf
+web/**/*.mjs  text eol=lf
+web/**/*.json text eol=lf
+web/**/*.css  text eol=lf
+web/*.ts      text eol=lf
+web/*.mjs     text eol=lf
+web/*.json    text eol=lf
+
+# Go 源码同样钉 LF：Windows 的 CRLF 检出会让 `gofmt -l` 把整个仓库报成未格式化，
+# 与 Linux/CI 的判断不一致（go build/test 本身两种换行都接受，这里只为对齐信号）。
+*.go  text eol=lf
