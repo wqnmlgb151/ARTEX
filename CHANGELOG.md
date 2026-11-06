@@ -10,6 +10,7 @@
 - 加固管理员认证和会话管理。登录使用 HttpOnly Cookie，修改密码立即撤销旧会话，SSE 通过 Cookie 认证。
 - Docker 默认仅在回环地址暴露端口，容器以非 root 用户运行。移除默认域名拦截规则，保留自定义规则。
 - 提供 Linux amd64/arm64、macOS amd64/arm64 和 Windows amd64 二进制包。升级后需重新登录。
+- 修复 `graph_overview` 缺失任务范围（`coverage.scope`）的问题：域名 / IP / CIDR / ICP / 关键词范围重新对 agent 可见，企业范围展开带条数上限，直接范围优先于继承范围。前端 `npm run check` 错误清零（231 → 0），并修复技能树按钮结构、LLM 录制页异步竞态与 Windows 静态构建兼容。
 
 ## [0.3.15] - 2026-10-07
 

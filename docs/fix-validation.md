@@ -1,5 +1,13 @@
 # 定向修复验证报告（2026-11-05）
 
+## 当前状态（2026-11-07 · v0.3.16 重建）
+
+- `agent/TestGraphOverviewExpandsAssociatedCompanyScope` 已修复（恢复 `graph_overview` 的 `coverage.scope`），不再是失败项。
+- 全量 Go 测试：**935 项通过、0 项失败、1 项跳过**。唯一跳过的是 `TestLiveContextReview`，它需要 `ARTEX_REVIEW_LIVE_CONFIG` 指向外部模型，属既有可选用例。CI：[run 42257842127](https://github.com/wqnmlgb151/ARTEX/actions/runs/42257842127)。
+- 前端 `npm run check`：**0 errors、106 warnings、734 infos**。warnings 为已知非阻断项，未通过调整规则规避。
+- v0.3.16 发布物由 `main` 的 `01caaf9` 构建，二进制内嵌 `vcs.revision=01caaf9…`、`vcs.modified=false`、`-tags=embedui`；构建运行：[42261087893](https://github.com/wqnmlgb151/ARTEX/actions/runs/42261087893)。
+- 以下各节是 **2026-11-05 的历史快照**，其中的失败项与检查数字不再代表当前状态。
+
 ## 结果与范围
 
 任务 A 使用 PostgreSQL 超时 Outbox、持久化 fanout、带租约的运行和会话去重；
@@ -15,9 +23,9 @@ manager 的超时/完成终态竞争流程；数据库行触发器覆盖这些�
 
 ### 远端 Linux 复核（2026-11-05）
 
-- PostgreSQL 16 + Ubuntu：修复分支 928 项通过、1 项失败、1 项跳过；同环境原始基线 919 项通过、1 项失败、1 项跳过（含子测试）。唯一失败均为 `agent/TestGraphOverviewExpandsAssociatedCompanyScope`。
+- PostgreSQL 16 + Ubuntu：修复分支 928 项通过、1 项失败、1 项跳过；同环境原始基线 919 项通过、1 项失败、1 项跳过（含子测试）。唯一失败均为 `agent/TestGraphOverviewExpandsAssociatedCompanyScope`（该失败已于 2026-11-07 修复，见顶部「当前状态」）。
 - `go vet ./...`、超时/认证定向 `-race` 回归、静态前端构建及 `docker compose config --quiet` 通过。新增 SSE 到期关闭、慢请求体不占用限流锁的测试通过。
-- Linux 前端 check：基线 134 errors / 138 warnings，修复分支 131 errors / 135 warnings；两边都失败，未关闭检查。Windows 完整诊断对比中新增浏览器脚本的换行格式已修正。
+- Linux 前端 check：基线 134 errors / 138 warnings，修复分支 131 errors / 135 warnings；两边都失败，未关闭检查。Windows 完整诊断对比中新增浏览器脚本的换行格式已修正。（2026-11-07 已降为 0 errors / 106 warnings。）
 - CI 已显式使用 Bash，使 `go test ... | tee` 的失败退出码正确传播；初轮 job 绿色不能代表全量 Go 测试通过，应以测试 JSON 为准。
 - 远端结果：https://github.com/wqnmlgb151/ARTEX/actions/runs/42018681563 ，基线：https://github.com/wqnmlgb151/ARTEX/actions/runs/42018195362 。
 
@@ -66,7 +74,7 @@ Compose 与本机二进制默认仅本地监听；HTTPS 代理需配置可信代
 
 ## 修改文件与目的
 
-最终前端全量检查：231 错误、135 警告、734 提示。
+最终前端全量检查（2026-11-05 快照）：231 错误、135 警告、734 提示；当前为 0 errors / 106 warnings / 734 infos。
 
 - `.env.example`：新增可信代理、来源与资源参数示例。
 - `Dockerfile`：非 root 身份及共享浏览器目录。
