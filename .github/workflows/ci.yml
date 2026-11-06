@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+          POSTGRES_DB: artex_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U artex -d artex_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      ARTEX_PG_DSN: postgres://artex:${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/artex_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Full Go suite
+        run: go test -p 1 -count=1 -json ./... | tee go-test.json
+      - name: Timeout and authentication regressions
+        if: ${{ !cancelled() }}
+        run: go test -p 1 -count=1 -race ./db ./server ./agent -run 'Test(Timeout|Merge|Auth|ValidatePassword|ProxyEnv)'
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: go-test-results
+          path: go-test.json
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - name: Frontend check
+        working-directory: web
+        run: npm run check
+      - name: Static frontend build
+        if: ${{ !cancelled() }}
+        working-directory: web
+        run: npm run build:static
+
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        env:
+          POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker compose config --quiet

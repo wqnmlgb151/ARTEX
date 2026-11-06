@@ -13,6 +13,16 @@ manager 的超时/完成终态竞争流程；数据库行触发器覆盖这些�
 
 ## 实际验证
 
+### 远端 Linux 复核（2026-11-05）
+
+- PostgreSQL 16 + Ubuntu：修复分支 928 项通过、1 项失败、1 项跳过；同环境原始基线 919 项通过、1 项失败、1 项跳过（含子测试）。唯一失败均为 `agent/TestGraphOverviewExpandsAssociatedCompanyScope`。
+- `go vet ./...`、超时/认证定向 `-race` 回归、静态前端构建及 `docker compose config --quiet` 通过。新增 SSE 到期关闭、慢请求体不占用限流锁的测试通过。
+- Linux 前端 check：基线 134 errors / 138 warnings，修复分支 131 errors / 135 warnings；两边都失败，未关闭检查。Windows 完整诊断对比中新增浏览器脚本的换行格式已修正。
+- CI 已显式使用 Bash，使 `go test ... | tee` 的失败退出码正确传播；初轮 job 绿色不能代表全量 Go 测试通过，应以测试 JSON 为准。
+- 远端结果：https://github.com/wqnmlgb151/ARTEX/actions/runs/42018681563 ，基线：https://github.com/wqnmlgb151/ARTEX/actions/runs/42018195362 。
+
+### 此前 Windows 验证
+
 - Go 1.26.3，Windows，临时 PostgreSQL 16.9，仅监听 127.0.0.1:55439；不使用业务库。
 - `go test ./... -json`：903 项通过、14 项失败、11 项跳过（含子测试）。退出码 1。
 - 修复前源码快照在另一独立测试库运行全量测试：896 项通过、14 项失败、11 项跳过。
