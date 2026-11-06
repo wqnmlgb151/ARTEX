@@ -3,6 +3,7 @@
 # ARTEX
 
 AI 自主渗透测试系统（Go 后端 + Next.js 前端）
+本仓库为 ARTEX 的二次维护分支。当前默认 Docker 镜像和在线更新仍指向上游，不包含本分支的修复；部署本分支请从本仓库源码构建，安全配置与验证结果见 [部署说明](docs/admin-security.md) 和 [验证报告](docs/fix-validation.md)。
 
 
 🌐 **在线 Demo**： [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/)
