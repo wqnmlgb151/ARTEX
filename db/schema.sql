@@ -1027,6 +1027,56 @@ CREATE TABLE IF NOT EXISTS scheduler_state (
     value TEXT NOT NULL DEFAULT ''
 );
 
+-- Timeout outbox: no historical backfill. Row triggers run in the status writer's
+-- transaction, including direct SQL writers and repeated runs of the same task.
+CREATE TABLE IF NOT EXISTS task_timeout_events (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    description TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_timeout_events_pending ON task_timeout_events(id) WHERE processed_at IS NULL;
+CREATE OR REPLACE FUNCTION record_task_timeout() RETURNS trigger AS $$
+BEGIN
+    IF NEW.status = 'timeout' AND OLD.status IS DISTINCT FROM 'timeout' AND NEW.deleted_at IS NULL THEN
+        INSERT INTO task_timeout_events(task_id, description, goal) VALUES (NEW.id, NEW.description, NEW.goal);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_task_timeout_event ON tasks;
+CREATE TRIGGER trg_task_timeout_event AFTER UPDATE OF status ON tasks
+    FOR EACH ROW EXECUTE FUNCTION record_task_timeout();
+
+CREATE TABLE IF NOT EXISTS timeout_trigger_runs (
+    id BIGSERIAL PRIMARY KEY,
+    agent_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    conversation_id BIGINT REFERENCES conversations(id) ON DELETE SET NULL,
+    completed_at TIMESTAMPTZ,
+    lease_owner TEXT NOT NULL DEFAULT '',
+    lease_until TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS timeout_trigger_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    event_id BIGINT NOT NULL REFERENCES task_timeout_events(id),
+    trigger_id BIGINT NOT NULL,
+    agent_key TEXT NOT NULL,
+    task_id BIGINT NOT NULL,
+    description TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    message TEXT NOT NULL,
+    run_id BIGINT REFERENCES timeout_trigger_runs(id),
+    UNIQUE(event_id, trigger_id)
+);
+CREATE INDEX IF NOT EXISTS idx_timeout_deliveries_pending ON timeout_trigger_deliveries(id) WHERE run_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_timeout_runs_pending ON timeout_trigger_runs(lease_until) WHERE completed_at IS NULL;
+
 -- =====================================================================
 -- K. 拦截规则
 -- =====================================================================

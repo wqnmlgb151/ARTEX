@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { Check, KeyRound, LogOut } from "lucide-react";
+import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -31,9 +32,13 @@ export function AccountSwitcher({
   const [activeUser, setActiveUser] = useState(users[0]);
   const [pwOpen, setPwOpen] = useState(false);
 
-  function handleLogout() {
-    auth.clearToken();
-    window.location.href = "/login";
+  async function handleLogout() {
+    try {
+      await auth.logout();
+      window.location.replace("/login");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "注销失败");
+    }
   }
 
   if (!activeUser) {

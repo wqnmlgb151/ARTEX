@@ -493,7 +493,7 @@ func (s *Server) conversationRunContext(id int64, busyKey string) (context.Conte
 	return ctx, cancel
 }
 
-func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string) {
+func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string) (runErr error) {
 	defer func() {
 		cancel(agent.AbortChatTurnFinished)
 		s.chatMu.Lock()
@@ -504,6 +504,11 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	// Only the first turn executes a historical retest. Follow-up conversation
 	// turns may explain the sealed result; the result tool refuses to overwrite it.
 	finishStatus, finishReason := "failed", "复测未能启动"
+	defer func() {
+		if runErr == nil && finishStatus != "completed" {
+			runErr = fmt.Errorf("conversation run: %s", finishReason)
+		}
+	}()
 	if c.AgentKey == db.FindingRetestAgentKey {
 		// Read without the run cancellation so an immediate stop still seals pending.
 		r, err := s.m.pg.FindingRetestForConversation(context.Background(), c.ID)
@@ -569,7 +574,13 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	} else {
 		finishStatus, finishReason = "completed", ""
 	}
-	_ = pg.TouchConversation(c.ID)
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	if err := pg.TouchConversation(c.ID); err != nil {
+		return err
+	}
+	return
 }
 
 // triggerBehavior is an agent's cached P3 trigger post-processing策略 (see the
@@ -648,6 +659,9 @@ func (s *Server) pumpLocked(agentKey string) {
 func (s *Server) runAndPump(agentKey string, item triggeredRun) {
 	s.runTriggeredRun(item)
 	s.queueMu.Lock()
+	for _, key := range item.timeoutQueueKeys {
+		delete(s.timeoutQueued, key)
+	}
 	s.triggerActive[agentKey]--
 	if s.triggerActive[agentKey] <= 0 && len(s.triggerQ[agentKey]) == 0 {
 		delete(s.triggerActive, agentKey)
@@ -668,13 +682,25 @@ func (s *Server) runAndPump(agentKey string, item triggeredRun) {
 // Caller holds queueMu.
 func (s *Server) nextTriggerRun(agentKey string, cfg triggerBehavior) triggeredRun {
 	q := s.triggerQ[agentKey]
+	if q[0].timeoutRunID != 0 {
+		s.triggerQ[agentKey] = q[1:]
+		return q[0]
+	}
 	if cfg.runMode == "parallel" || cfg.mergeMode == "none" {
 		s.triggerQ[agentKey] = q[1:]
 		return q[0]
 	}
 	if cfg.mergeMode == "all" {
-		s.triggerQ[agentKey] = q[:0:0]
-		return mergeAllRuns(q)
+		var group, rest []triggeredRun
+		for _, it := range q {
+			if it.timeoutRunID != 0 {
+				rest = append(rest, it)
+			} else {
+				group = append(group, it)
+			}
+		}
+		s.triggerQ[agentKey] = rest
+		return mergeAllRuns(group)
 	}
 	// by_task: head + same-task mergeable fires.
 	head := q[0]
@@ -685,7 +711,7 @@ func (s *Server) nextTriggerRun(agentKey string, cfg triggerBehavior) triggeredR
 	group := []triggeredRun{head}
 	rest := q[:0:0] // keep non-matching items in order
 	for _, it := range q[1:] {
-		if it.mergeable && it.taskID == head.taskID {
+		if it.timeoutRunID == 0 && it.mergeable && it.taskID == head.taskID {
 			group = append(group, it)
 		} else {
 			rest = append(rest, it)
@@ -741,11 +767,13 @@ func mergeTriggeredRuns(items []triggeredRun) triggeredRun {
 		fmt.Fprintf(&b, "\n── 触发 %d ──\n%s\n", i+1, it.message)
 	}
 	return triggeredRun{
-		agentKey:  first.agentKey,
-		title:     fmt.Sprintf("合并触发 · task#%d · %d 条", first.taskID, len(items)),
-		message:   b.String(),
-		taskID:    first.taskID,
-		mergeable: true,
+		timeoutDeliveryIDs: mergedTimeoutIDs(items),
+		timeoutQueueKeys:   mergedTimeoutKeys(items),
+		agentKey:           first.agentKey,
+		title:              fmt.Sprintf("合并触发 · task#%d · %d 条", first.taskID, len(items)),
+		message:            b.String(),
+		taskID:             first.taskID,
+		mergeable:          true,
 		// taskDesc/taskGoal left empty: header already embedded above.
 	}
 }
@@ -783,11 +811,13 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 		}
 	}
 	return triggeredRun{
-		agentKey:  first.agentKey,
-		title:     fmt.Sprintf("合并触发 · 全部 · %d 条", len(items)),
-		message:   b.String(),
-		taskID:    first.taskID,
-		mergeable: true,
+		timeoutDeliveryIDs: mergedTimeoutIDs(items),
+		timeoutQueueKeys:   mergedTimeoutKeys(items),
+		agentKey:           first.agentKey,
+		title:              fmt.Sprintf("合并触发 · 全部 · %d 条", len(items)),
+		message:            b.String(),
+		taskID:             first.taskID,
+		mergeable:          true,
 		// taskDesc/taskGoal left empty: per-task headers already embedded above.
 	}
 }
@@ -796,6 +826,10 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 // turn, and runs it synchronously (blocks until the run ends). recover keeps a
 // panic from killing the drain loop and wedging the agent's queue.
 func (s *Server) runTriggeredRun(item triggeredRun) {
+	if len(item.timeoutDeliveryIDs) > 0 || item.timeoutRunID != 0 {
+		s.runDurableTimeout(item)
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[trigger] run for %s panicked: %v", item.agentKey, r)

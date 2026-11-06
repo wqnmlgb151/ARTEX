@@ -28,8 +28,12 @@ services:
       ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:-}
       ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:-}
       ARTEX_LLM_PROXY: ${ARTEX_LLM_PROXY:-}
+      ARTEX_AUTH_DIR: /app/auth
+      ARTEX_TRUSTED_PROXIES: ${ARTEX_TRUSTED_PROXIES:-}
+      ARTEX_ALLOWED_ORIGINS: ${ARTEX_ALLOWED_ORIGINS:-}
+      ARTEX_COOKIE_SECURE: ${ARTEX_COOKIE_SECURE:-0}
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
       - "127.0.0.1:8788:8788"
     volumes:
       # 把数据目录（含 jwt.key、SQLite 等）绑定到项目根目录的 data/，
@@ -38,7 +42,16 @@ services:
       # 把项目根目录的 skills 挂进容器（覆盖镜像内置的 /app/skills）；
       # 改 skill 无需重建镜像，容器读的就是宿主机这份。
       - ./skills:/app/skills
+      - authdata:/app/auth
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: ${ARTEX_PIDS_LIMIT:-512}
+    mem_limit: ${ARTEX_MEMORY_LIMIT:-4g}
+    cpus: ${ARTEX_CPU_LIMIT:-2}
     restart: unless-stopped
 
 volumes:
   pgdata:
+  authdata:

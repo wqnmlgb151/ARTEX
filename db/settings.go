@@ -2,6 +2,17 @@ package db
 
 import "database/sql"
 
+// CompareAndSwapSetting prevents concurrent password changes from accepting the
+// same old credential twice. The hash itself is the persistent session version.
+func (d *DB) CompareAndSwapSetting(key, oldValue, newValue string) (bool, error) {
+	res, err := d.Exec(`UPDATE settings SET value=$3,updated_at=now() WHERE key=$1 AND value=$2`, key, oldValue, newValue)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // Settings is a tiny key-value store for global app config the UI toggles at
 // runtime (e.g. traffic_capture). Missing keys fall back to caller defaults.
 

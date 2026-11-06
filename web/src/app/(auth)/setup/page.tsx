@@ -22,6 +22,7 @@ export default function SetupPage() {
   const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
+    auth.clearLegacyToken();
     api
       .authStatus()
       .then(({ initialized }) => {
@@ -47,8 +48,7 @@ export default function SetupPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.initPassword(password);
-      auth.setToken(token);
+      await api.initPassword(password);
       router.replace("/function/tasks");
     } catch (err) {
       setError(err instanceof Error ? err.message : "初始化失败");

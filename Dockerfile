@@ -12,6 +12,7 @@
 #   docker build -t artex:local .
 FROM python:3.12-slim-bookworm
 ARG TARGETARCH
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
 # Node 从 NodeSource 装 20.x：bookworm 自带的 apt nodejs 是 18，Playwright 要求 >=20。
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,6 +39,13 @@ COPY dist/${TARGETARCH}/artex /app/artex
 COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/
+RUN groupadd --gid 10001 artex \
+    && useradd --uid 10001 --gid artex --create-home artex \
+    && mkdir -p /app/data /app/auth \
+    && chown -R artex:artex /app \
+    && chmod 700 /app/auth \
+    && chmod -R a+rX /opt/playwright
+USER artex
 # data/（SQLite + jwt.key）持久化点
 VOLUME ["/app/data"]
 EXPOSE 8787 8788

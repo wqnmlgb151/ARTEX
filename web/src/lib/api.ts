@@ -106,30 +106,28 @@ import type {
   WorkspaceListing,
 } from "@/lib/types";
 
-function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("artex_token");
+export async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  headers.set("X-Artex-CSRF", "1");
+  const response = await fetch(input, { ...init, headers, credentials: "include" });
+  if (response.status === 401 && typeof window !== "undefined" && !String(input).includes("/api/auth/")) {
+    localStorage.removeItem("artex_token");
+    window.location.replace("/login");
+  }
+  return response;
 }
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (MOCK) return mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
-  const token = getToken();
-  const r = await fetch(`/api${path}`, {
+  const r = await authenticatedFetch(`/api${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "X-Artex-CSRF": "1",
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
-  if (r.status === 401) {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("artex_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
-      window.location.href = "/login";
-    }
-    throw new Error("未授权");
-  }
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
     let message = fallback;
@@ -159,10 +157,10 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // Dev (next dev): SSE must NOT go through the Next.js `/api` rewrite — that proxy
 // buffers the streamed response, so event frames never reach the browser (the
 // EventSource opens but receives 0 messages). So in dev only we connect straight
-// to the Go backend on :8787, whose CORS is open.
+// to the Go backend on :8787, whose CORS explicitly permits the development origin.
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// Token is appended as ?token= because SSE can't carry cookies cross-origin.
+// EventSource sends the HttpOnly cookie with withCredentials in local development.
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
   return `# ARTEX 渗透测试报告 — Acme Corp
@@ -192,9 +190,29 @@ export function sseUrl(path: string): string {
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:8787`
       : "");
-  const token = getToken();
-  const sep = path.includes("?") ? "&" : "?";
-  return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
+  return `${base}${path}`;
+}
+
+// Share credentialed SSE and session-expiry handling across every stream.
+export function eventSource(url: string): EventSource {
+  const stream = new EventSource(url, { withCredentials: true });
+  let checking = false;
+  stream.addEventListener("error", async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      const response = await authenticatedFetch("/api/auth/status", { credentials: "include", cache: "no-store" });
+      if (response.ok && !(await response.json()).authenticated) {
+        stream.close();
+        window.location.replace("/login");
+      }
+    } catch {
+      // A disconnected backend can recover through EventSource's normal retry.
+    } finally {
+      checking = false;
+    }
+  });
+  return stream;
 }
 
 const get = <T>(p: string) => http<T>(p);
@@ -237,9 +255,9 @@ export const api = {
   health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
 
   // ---- auth ----
-  authStatus: () => get<{ initialized: boolean }>("/auth/status"),
-  login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
-  initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
+  authStatus: () => get<{ initialized: boolean; authenticated: boolean }>("/auth/status"),
+  login: (username: string, password: string) => post<{ ok: boolean }>("/auth/login", { username, password }),
+  initPassword: (password: string) => post<{ ok: boolean }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 
@@ -442,10 +460,9 @@ export const api = {
     if (MOCK) return { uploaded: files.length };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
-    const token = getToken();
-    const r = await fetch(`/api/workspace/upload?path=${encodeURIComponent(dir)}`, {
+    const r = await authenticatedFetch(`/api/workspace/upload?path=${encodeURIComponent(dir)}`, {
       method: "POST",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {},
       body: fd,
     });
     if (!r.ok) throw new Error(`上传失败: ${r.status}`);
@@ -456,9 +473,8 @@ export const api = {
     if (MOCK) {
       blob = new Blob([`（demo）${path} 的下载内容示例。`], { type: "text/plain" });
     } else {
-      const token = getToken();
-      const r = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      const r = await authenticatedFetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, {
+        headers: {},
       });
       if (!r.ok) throw new Error(`下载失败: ${r.status}`);
       blob = await r.blob();
@@ -570,9 +586,8 @@ export const api = {
     } else if (opts.scope === "filtered" && opts.filters) {
       for (const [k, v] of findingFilterParams(opts.filters)) p.set(k, v);
     }
-    const token = getToken();
-    const r = await fetch(`/api/exploration/findings/export?${p.toString()}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    const r = await authenticatedFetch(`/api/exploration/findings/export?${p.toString()}`, {
+      headers: {},
     });
     if (!r.ok) throw new Error(`export: ${r.status}`);
     const blob = await r.blob();
@@ -643,10 +658,9 @@ export const api = {
     side: "request" | "response",
     contextTask?: string,
   ) => {
-    const token = getToken();
-    const response = await fetch(
+    const response = await authenticatedFetch(
       `/api/exploration/findings/${id}/traffic/${bindingId}/body?side=${side}&download=1${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`,
-      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      { headers: {} },
     );
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: "下载失败" }));
@@ -825,8 +839,7 @@ export const api = {
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;
@@ -865,9 +878,8 @@ export const api = {
   notifyRetryDelivery: (id: number) => post<{ ok: boolean }>(`/notify/deliveries/${id}/retry`),
   report: async (task?: string) => {
     if (MOCK) return mockReport(task);
-    const token = getToken();
-    const r = await fetch(`/api/report${tq(task)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    const r = await authenticatedFetch(`/api/report${tq(task)}`, {
+      headers: {},
     });
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
@@ -893,10 +905,9 @@ export const api = {
       };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
-    const token = getToken();
-    const r = await fetch(`/api/chat/upload?scope=${scope}&id=${encodeURIComponent(id)}`, {
+    const r = await authenticatedFetch(`/api/chat/upload?scope=${scope}&id=${encodeURIComponent(id)}`, {
       method: "POST",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {},
       body: fd,
     });
     if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
@@ -1153,11 +1164,10 @@ export const api = {
     if (MOCK) return { name: file.name.replace(/\.zip$/i, ""), files: 1 };
     const fd = new FormData();
     fd.append("file", file);
-    const token = getToken();
-    const r = await fetch(`/api/skills/upload${overwrite ? "?overwrite=true" : ""}`, {
+    const r = await authenticatedFetch(`/api/skills/upload${overwrite ? "?overwrite=true" : ""}`, {
       method: "POST",
       body: fd,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {},
     });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body?.error || `上传失败(${r.status})`);
@@ -1242,21 +1252,19 @@ export const api = {
   // ---- intercept tool-config (全局工具拦截范围) ----
   interceptGetToolConfig: async (): Promise<{ enabled_tools: string[] }> => {
     if (MOCK) return { enabled_tools: ["bash"] };
-    const token = getToken();
-    const r = await fetch("/api/intercept/tool-config", {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    const r = await authenticatedFetch("/api/intercept/tool-config", {
+      headers: {},
     });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
   interceptSetToolConfig: async (enabledTools: string[]): Promise<void> => {
     if (MOCK) return;
-    const token = getToken();
-    const r = await fetch("/api/intercept/tool-config", {
+    const r = await authenticatedFetch("/api/intercept/tool-config", {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "X-Artex-CSRF": "1",
       },
       body: JSON.stringify({ enabled_tools: enabledTools }),
     });
